@@ -9,8 +9,8 @@
                          │  HTTP
 ┌────────────────────────▼────────────────────────────────────────┐
 │  Streamlit app  (app/main.py)                                   │
-│  • 5 pages: Dashboard, Add Expense, Set Budget, Analytics,      │
-│    History                                                       │
+│  • 6 pages: Dashboard, Add Expense, Set Budget, Analytics,      │
+│    History, Compare Months                                       │
 │  • Plotly charts, pandas DataFrames                             │
 │  • Single cached Database instance (@st.cache_resource)        │
 └────────────────────────┬────────────────────────────────────────┘
@@ -116,6 +116,26 @@ sel_year / sel_month selected
   → Python: compute pct_change per category
   → Alert boxes for categories with >20% increase
   → Plotly bar chart coloured red (increase) / green (decrease)
+```
+
+### Compare Months
+```
+User picks Month A (ya, ma) and Month B (yb, mb) via inline selectors
+  → show_compare_months() called  (4 DB calls total)
+    → db.get_monthly_summary(ya, ma)          → category totals for A
+    → db.get_monthly_summary(yb, mb)          → category totals for B
+    → db.get_expenses_for_month(ya, ma)       → individual expenses for A
+    → db.get_expenses_for_month(yb, mb)       → individual expenses for B
+  → Python: sum totals → identify overall higher month (hi) vs lower month (lo)
+  → Python: group individual expenses by category (dict, no extra DB calls)
+  → For each category:
+      exceeded = hi_month_spent > lo_month_spent for that category
+      if exceeded → 🔺 flag + "Why the difference?" box (transaction count,
+                    avg amount, largest single expense)
+      if not exceeded → 🟢 neutral (lower month spent more here; not flagged)
+  → Highlights section: big jumps (>20%), new categories, gone categories
+     — all scoped to exceeded categories only
+  → Plotly grouped bar chart (all categories, both months side-by-side)
 ```
 
 ## File responsibilities
