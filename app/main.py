@@ -709,7 +709,6 @@ def show_compare_months():
         st.info("No expense data found for either selected month.")
         return
 
-    # Group individual expenses by category for drill-down
     by_cat_a: dict[str, list] = {}
     for e in exp_a:
         by_cat_a.setdefault(e["category"], []).append(e)
@@ -721,6 +720,18 @@ def show_compare_months():
     total_b = sum(sum_b.values())
     diff_total = total_b - total_a
 
+    # ── Identify the overall higher and lower month ───────────────────────────
+    # Flags and "why" boxes only appear for categories where the higher month
+    # also exceeded the lower month — not for categories that went the other way.
+    if total_a >= total_b:
+        hi_label, lo_label = label_a, label_b
+        sum_hi, sum_lo = sum_a, sum_b
+        by_cat_hi, by_cat_lo = by_cat_a, by_cat_b
+    else:
+        hi_label, lo_label = label_b, label_a
+        sum_hi, sum_lo = sum_b, sum_a
+        by_cat_hi, by_cat_lo = by_cat_b, by_cat_a
+
     # ── Summary metrics ───────────────────────────────────────────────────────
     m1, m2, m3 = st.columns(3)
     with m1:
@@ -730,53 +741,56 @@ def show_compare_months():
         st.metric(label_b, fmt(total_b), delta=f"{delta_sign}{fmt(diff_total)}", delta_color="inverse")
     with m3:
         if total_a == total_b:
-            higher_label, pct_more = "Tied", None
-        elif total_a > total_b:
-            base = total_b if total_b > 0 else 1
-            higher_label, pct_more = label_a, abs(diff_total) / base * 100
+            st.metric("Higher spending month", "Tied")
         else:
-            base = total_a if total_a > 0 else 1
-            higher_label, pct_more = label_b, abs(diff_total) / base * 100
-        delta_txt = f"{pct_more:.1f}% more" if pct_more is not None else None
-        st.metric("Higher spending month", higher_label, delta=delta_txt, delta_color="off")
+            base = min(total_a, total_b) if min(total_a, total_b) > 0 else 1
+            pct_more = abs(diff_total) / base * 100
+            st.metric("Higher spending month", hi_label, delta=f"{pct_more:.1f}% more", delta_color="off")
 
     st.markdown("---")
 
-    # ── Highlights ────────────────────────────────────────────────────────────
+    # ── Build category rows ───────────────────────────────────────────────────
     all_cats = sorted(set(sum_a) | set(sum_b))
     cat_rows = []
     for cat in all_cats:
         a = sum_a.get(cat, 0.0)
         b = sum_b.get(cat, 0.0)
-        cat_rows.append((cat, a, b, b - a))
-    cat_rows.sort(key=lambda x: abs(x[3]), reverse=True)
+        hi = sum_hi.get(cat, 0.0)
+        lo = sum_lo.get(cat, 0.0)
+        # exceeded = the higher month also spent more in this specific category
+        exceeded = hi > lo
+        cat_rows.append((cat, a, b, hi, lo, exceeded))
 
-    new_cats   = [cat for cat, a, b, _ in cat_rows if a == 0 and b > 0]
-    gone_cats  = [cat for cat, a, b, _ in cat_rows if b == 0 and a > 0]
-    big_jumps  = [
-        (cat, a, b, diff) for cat, a, b, diff in cat_rows
-        if a > 0 and diff / a * 100 > 20
+    # Flagged (exceeded) categories first, sorted by gap; rest after
+    cat_rows.sort(key=lambda x: (not x[5], -(x[3] - x[4])))
+
+    # ── Highlights — only for categories where hi_label exceeded lo_label ─────
+    big_jumps = [
+        (cat, lo, hi) for cat, a, b, hi, lo, exc in cat_rows
+        if exc and lo > 0 and (hi - lo) / lo * 100 > 20
     ]
+    new_cats  = [cat for cat, a, b, hi, lo, exc in cat_rows if exc and lo == 0 and hi > 0]
+    gone_cats = [cat for cat, a, b, hi, lo, exc in cat_rows if not exc and hi == 0 and lo > 0]
 
-    if new_cats or gone_cats or big_jumps:
+    if big_jumps or new_cats or gone_cats:
         st.subheader("Highlights")
         if big_jumps:
-            st.markdown("**Categories with >20% increase in Month B:**")
-            for cat, a, b, diff in big_jumps[:5]:
-                pct = diff / a * 100
+            st.markdown(f"**Categories where {hi_label} exceeded {lo_label} by >20%:**")
+            for cat, lo, hi in big_jumps[:5]:
+                pct = (hi - lo) / lo * 100
                 st.markdown(
-                    f'<div class="danger-box">🔺 <b>{cat}</b>: {fmt(a)} → {fmt(b)} '
-                    f'(<b>+{pct:.1f}%</b>, up by {fmt(diff)})</div>',
+                    f'<div class="danger-box">🔺 <b>{cat}</b>: {fmt(lo)} ({lo_label}) → {fmt(hi)} ({hi_label})'
+                    f'  (<b>+{pct:.1f}%</b>, over by {fmt(hi - lo)})</div>',
                     unsafe_allow_html=True,
                 )
         if new_cats:
             st.markdown(
-                f'<div class="alert-box">🆕 <b>New in {label_b}:</b> {", ".join(new_cats)}</div>',
+                f'<div class="alert-box">🆕 <b>New in {hi_label}:</b> {", ".join(new_cats)}</div>',
                 unsafe_allow_html=True,
             )
         if gone_cats:
             st.markdown(
-                f'<div class="alert-box">🟢 <b>Not spent in {label_b}:</b> {", ".join(gone_cats)}</div>',
+                f'<div class="alert-box">🟢 <b>Not spent in {hi_label}:</b> {", ".join(gone_cats)}</div>',
                 unsafe_allow_html=True,
             )
         st.markdown("---")
@@ -784,7 +798,7 @@ def show_compare_months():
     # ── Grouped bar chart ─────────────────────────────────────────────────────
     st.subheader("Side-by-Side Category Comparison")
     chart_data = []
-    for cat, a, b, _ in cat_rows:
+    for cat, a, b, hi, lo, exc in cat_rows:
         chart_data.append({"Category": cat, "Month": label_a, "Amount": a})
         chart_data.append({"Category": cat, "Month": label_b, "Amount": b})
 
@@ -803,29 +817,31 @@ def show_compare_months():
     # ── Category drill-down ───────────────────────────────────────────────────
     st.markdown("---")
     st.subheader("Category Breakdown")
-    st.caption("Expand any category to see the individual expenses that explain the difference.")
+    st.caption(
+        f"🔺 Flagged = {hi_label} (higher month) also exceeded {lo_label} in that category. "
+        f"Expand to see individual expenses and the reason behind the difference."
+    )
 
-    for cat, a, b, diff in cat_rows:
+    for cat, a, b, hi, lo, exceeded in cat_rows:
         ec_a = by_cat_a.get(cat, [])
         ec_b = by_cat_b.get(cat, [])
+        ec_hi = by_cat_hi.get(cat, [])
+        ec_lo = by_cat_lo.get(cat, [])
 
-        if diff > 0:
-            badge = f"  |  🔺 {label_b} higher by {fmt(diff)}"
-        elif diff < 0:
-            badge = f"  |  🟢 {label_a} higher by {fmt(abs(diff))}"
+        if exceeded:
+            diff = hi - lo
+            pct_str = ""
+            if lo > 0:
+                pct_str = f" (+{diff / lo * 100:.1f}%)"
+            elif lo == 0:
+                pct_str = " (new)"
+            badge = f"  🔺 {hi_label} over by {fmt(diff)}{pct_str}"
         else:
-            badge = "  |  ➡ Same"
+            gap = lo - hi
+            pct_str = f" (+{gap / hi * 100:.1f}%)" if hi > 0 and gap > 0 else ""
+            badge = f"  🟢 {lo_label} higher by {fmt(gap)}{pct_str}" if gap > 0 else "  ➡ Same"
 
-        pct_str = ""
-        if a > 0 and diff != 0:
-            pct = diff / a * 100
-            pct_str = f" ({'+' if pct > 0 else ''}{pct:.1f}%)"
-        elif a == 0 and b > 0:
-            pct_str = " (new)"
-        elif b == 0 and a > 0:
-            pct_str = " (gone)"
-
-        expander_label = f"{cat}  —  {label_a}: {fmt(a)}  |  {label_b}: {fmt(b)}{badge}{pct_str}"
+        expander_label = f"{cat}  —  {label_a}: {fmt(a)}  |  {label_b}: {fmt(b)}{badge}"
 
         with st.expander(expander_label):
             left, right = st.columns(2)
@@ -848,35 +864,33 @@ def show_compare_months():
                 else:
                     st.caption("No expenses this month.")
 
-            # Automatic insight
-            if diff != 0:
+            # "Why?" box — only shown when the higher month exceeded in this category
+            if exceeded and hi > lo:
                 insights = []
-                txn_diff = len(ec_b) - len(ec_a)
+                txn_diff = len(ec_hi) - len(ec_lo)
                 if txn_diff > 0:
-                    insights.append(f"{txn_diff} more transaction(s) in {label_b}")
+                    insights.append(f"{txn_diff} more transaction(s) in {hi_label}")
                 elif txn_diff < 0:
-                    insights.append(f"{abs(txn_diff)} fewer transaction(s) in {label_b}")
+                    insights.append(f"{abs(txn_diff)} fewer transaction(s) in {hi_label}")
 
-                avg_a = a / len(ec_a) if ec_a else 0
-                avg_b = b / len(ec_b) if ec_b else 0
-                if avg_a > 0 and avg_b > 0 and abs(avg_b - avg_a) > 1:
-                    direction = "higher" if avg_b > avg_a else "lower"
+                avg_hi = hi / len(ec_hi) if ec_hi else 0
+                avg_lo = lo / len(ec_lo) if ec_lo else 0
+                if avg_hi > 0 and avg_lo > 0 and abs(avg_hi - avg_lo) > 1:
+                    direction = "higher" if avg_hi > avg_lo else "lower"
                     insights.append(
-                        f"Average transaction {direction} in {label_b} ({fmt(avg_b)} vs {fmt(avg_a)})"
+                        f"Average transaction {direction} in {hi_label} ({fmt(avg_hi)} vs {fmt(avg_lo)})"
                     )
 
-                higher_expenses = ec_b if diff > 0 else ec_a
-                higher_label = label_b if diff > 0 else label_a
-                if higher_expenses:
-                    top = max(higher_expenses, key=lambda e: e["amount"])
+                if ec_hi:
+                    top = max(ec_hi, key=lambda e: e["amount"])
                     desc = top["description"] or "—"
-                    insights.append(f"Largest single expense in {higher_label}: {desc} ({fmt(top['amount'])})")
+                    insights.append(f"Largest expense in {hi_label}: {desc} ({fmt(top['amount'])})")
 
                 if insights:
-                    box_class = "danger-box" if diff > 0 else "alert-box"
                     insight_html = "<br>".join(f"• {i}" for i in insights)
                     st.markdown(
-                        f'<div class="{box_class}" style="margin-top:8px"><b>Why the difference?</b><br>{insight_html}</div>',
+                        f'<div class="danger-box" style="margin-top:8px">'
+                        f"<b>Why did {hi_label} exceed {lo_label} here?</b><br>{insight_html}</div>",
                         unsafe_allow_html=True,
                     )
 
